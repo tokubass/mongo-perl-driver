@@ -19,8 +19,10 @@ use Test::More 0.96;
 use Test::Deep 0.086; # num() function
 use Test::Fatal;
 
+use Config;
 use DateTime;
 use DateTime::Tiny;
+use Math::BigInt;
 use MongoDB;
 use MongoDB::OID;
 use MongoDB::DBRef;
@@ -62,6 +64,8 @@ use constant PERL58 => $] lt '5.010';
 use constant {
     P_INT32 => PERL58 ? "l" : "l<",
     P_INT64 => PERL58 ? "q" : "q<",
+    MAX_LONG => 2147483647,
+    MIN_LONG => -2147483647 - 1,
     BSON_DOUBLE   => "\x01",
     BSON_STRING   => "\x02",
     BSON_DOC      => "\x03",
@@ -69,6 +73,8 @@ use constant {
     BSON_DATETIME => "\x09",
     BSON_NULL     => "\x0A",
     BSON_REGEXP   => "\x0B",
+    BSON_INT32    => "\x10",
+    BSON_INT64    => "\x12",
 };
 
 my $class = "MongoDB::BSON";
@@ -144,7 +150,66 @@ my @cases = (
         output =>
           { a => [ '$db' => $dbref->db, '$id' => $dbref->id, '$ref' => $dbref->ref ] },
     },
+    {
+        label  => "BSON Int32",
+        input  => { a => 66 },
+        bson   => _doc( BSON_INT32 . _ename("a") . _int32(66) ),
+        output => { a => 66 },
+    },
+    {
+        label  => "BSON Int32 (max 32 bit int)",
+        input  => { a => MAX_LONG },
+        bson   => _doc( BSON_INT32 . _ename("a") . _int32(MAX_LONG) ),
+        output => { a => MAX_LONG },
+    },
+    {
+        label  => "BSON Int32 (min 32 bit int)",
+        input  => { a => MIN_LONG },
+        bson   => _doc( BSON_INT32 . _ename("a") . _int32( MIN_LONG ) ),
+        output => { a => MIN_LONG },
+    },
+    {
+        label  => "BSON Int32 (small bigint)",
+        input  => { a => Math::BigInt->new(66) },
+        bson   => _doc( BSON_INT32 . _ename("a") . _int32(66) ),
+        output => { a => 66 },
+    },
+    {
+        label  => "BSON Int32 (max 32 bit bigint)",
+        input  => { a => Math::BigInt->new(MAX_LONG) },
+        bson   => _doc( BSON_INT32 . _ename("a") . _int32(MAX_LONG) ),
+        output => { a => MAX_LONG },
+    },
+    {
+        label  => "BSON Int32 (min 32 bit bigint)",
+        input  => { a => Math::BigInt->new(MIN_LONG) },
+        bson   => _doc( BSON_INT32 . _ename("a") . _int32( MIN_LONG ) ),
+        output => { a => MIN_LONG },
+    },
 );
+
+if ( $Config{use64bitint} ) {
+    my $big = 20 << 40;
+    push @cases,
+      {
+        label  => "BSON Int64",
+        input  => { a => $big },
+        bson   => _doc( BSON_INT64 . _ename("a") . _int64($big) ),
+        output => { a => $big },
+      },
+      {
+        label  => "BSON Int64 (64 bit bigint)",
+        input  => { a => Math::BigInt->new(MAX_LONG + 1) },
+        bson   => _doc( BSON_INT64 . _ename("a") . _int64(MAX_LONG + 1) ),
+        output => { a => MAX_LONG + 1},
+      },
+      {
+        label  => "BSON Int64 (64 bit bigint)",
+        input  => { a => Math::BigInt->new(MIN_LONG - 1 ) },
+        bson   => _doc( BSON_INT64 . _ename("a") . _int64(MIN_LONG - 1) ),
+        output => { a => MIN_LONG - 1 },
+      };
+}
 
 for my $c (@cases) {
     my ( $label, $input, $bson, $output ) = @{$c}{qw/label input bson output/};
@@ -156,6 +221,23 @@ for my $c (@cases) {
           or diag "GOT:", explain($decoded), "EXPECTED:", explain($output);
     }
 }
+
+subtest "bigint over/underflow" => sub {
+    # these are greater/less than LLONG_MAX/MIN
+    my $too_big   = Math::BigInt->new("9223372036854775808");
+    my $too_small = Math::BigInt->new("-9223372036854775809");
+
+    for my $data ( $too_big, $too_small ) {
+        like( exception { $codec->encode_one( { a => $data } ) },
+            qr/Math::BigInt '-?\d+' can't fit into a 64-bit integer/, "error encoding $data" );
+    }
+};
+
+done_testing;
+
+#--------------------------------------------------------------------------#
+# helper functions
+#--------------------------------------------------------------------------#
 
 sub is_bin {
     my ( $got, $exp, $label ) = @_;
@@ -174,6 +256,10 @@ sub _cstring { return $_[0] . "\x00" }
 BEGIN { *_ename = \&_cstring }
 
 sub _double { return pack( "d", shift ) }
+
+sub _int32 { return pack( P_INT32, shift ) }
+
+sub _int64 { return pack( P_INT64, shift ) }
 
 sub _string {
     my ($string) = shift;
@@ -200,7 +286,5 @@ sub _dbref {
     );
     #>>>
 }
-
-done_testing;
 
 # vim: ts=4 sts=4 sw=4 et:
